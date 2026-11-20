@@ -1,0 +1,194 @@
+-- =====================================================
+-- MEDEX - MODULE 4: ORDER MANAGEMENT
+-- STANDALONE VERSION FOR TEMPORARY SUPABASE PROJECT
+--
+-- External dependencies intentionally not connected yet:
+-- public.users
+-- public.addresses
+-- public.emergency_alerts
+-- public.merchant_profiles
+-- public.products
+--
+-- These relationships must be connected by the team
+-- when all modules are combined
+-- (see order-management-connect.psql).
+-- =====================================================
+
+
+-- ORDER CODE SEQUENCE
+CREATE SEQUENCE IF NOT EXISTS public.order_code_seq START 1;
+
+
+-- 1. CARTS
+CREATE TABLE IF NOT EXISTS public.carts (
+    cart_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL UNIQUE,
+    merchant_id UUID,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+-- 2. CART ITEMS
+CREATE TABLE IF NOT EXISTS public.cart_items (
+    cart_id UUID NOT NULL
+        REFERENCES public.carts(cart_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    added_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (cart_id, product_id)
+);
+
+
+-- 3. ORDERS
+CREATE TABLE IF NOT EXISTS public.orders (
+    order_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_code VARCHAR(30) NOT NULL UNIQUE
+        DEFAULT (
+            'OR-'
+            || TO_CHAR(NOW() AT TIME ZONE 'Asia/Manila', 'YYMMDD')
+            || '-'
+            || LPAD(NEXTVAL('public.order_code_seq')::TEXT, 5, '0')
+        ),
+    idempotency_key VARCHAR(64) NOT NULL UNIQUE,
+    user_id UUID NOT NULL,
+    merchant_id UUID NOT NULL,
+    address_id UUID,
+    alert_id UUID,
+    recipient_name VARCHAR(100) NOT NULL,
+    recipient_phone VARCHAR(20) NOT NULL,
+    delivery_address TEXT NOT NULL,
+    delivery_landmark VARCHAR(255),
+    delivery_note TEXT,
+    subtotal NUMERIC(10,2) NOT NULL CHECK (subtotal >= 0),
+    delivery_fee NUMERIC(10,2) NOT NULL CHECK (delivery_fee >= 0),
+    total_amount NUMERIC(10,2) NOT NULL CHECK (total_amount >= 0),
+    payment_method VARCHAR(20) NOT NULL DEFAULT 'cod'
+        CHECK (payment_method = 'cod'),
+    status VARCHAR(40) NOT NULL
+        CHECK (status IN (
+            'awaiting_prescription_review',
+            'pending',
+            'placed',
+            'preparing',
+            'ready_for_pickup',
+            'out_for_delivery',
+            'delivered',
+            'cancelled'
+        )),
+    cancel_reason TEXT,
+    cancelled_by UUID,
+    cancelled_at TIMESTAMPTZ,
+    placed_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chk_orders_total
+        CHECK (total_amount = subtotal + delivery_fee)
+);
+
+
+-- 4. ORDER ITEMS
+CREATE TABLE IF NOT EXISTS public.order_items (
+    order_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL
+        REFERENCES public.orders(order_id),
+    product_id UUID,
+    product_name VARCHAR(150) NOT NULL,
+    generic_name VARCHAR(150) NOT NULL,
+    brand_name VARCHAR(150) NOT NULL,
+    strength VARCHAR(150) NOT NULL,
+    dosage_form VARCHAR(50) NOT NULL,
+    unit VARCHAR(50) NOT NULL,
+    unit_price NUMERIC(10,2) NOT NULL CHECK (unit_price >= 0),
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    line_total NUMERIC(10,2) NOT NULL CHECK (line_total >= 0),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chk_order_items_line_total
+        CHECK (line_total = unit_price * quantity)
+);
+
+
+-- 5. ORDER STATUS HISTORY
+CREATE TABLE IF NOT EXISTS public.order_status_history (
+    history_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL
+        REFERENCES public.orders(order_id),
+    previous_status VARCHAR(40),
+    new_status VARCHAR(40) NOT NULL
+        CHECK (new_status IN (
+            'awaiting_prescription_review',
+            'pending',
+            'placed',
+            'preparing',
+            'ready_for_pickup',
+            'out_for_delivery',
+            'delivered',
+            'cancelled'
+        )),
+    changed_by UUID,
+    changed_reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+-- 6. PRESCRIPTIONS
+CREATE TABLE IF NOT EXISTS public.prescriptions (
+    prescription_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL
+        REFERENCES public.orders(order_id),
+    file_path TEXT NOT NULL CHECK (LENGTH(BTRIM(file_path)) > 0),
+    file_type VARCHAR(50),
+    file_size BIGINT,
+    patient_name VARCHAR(100) NOT NULL,
+    doctor_name VARCHAR(100) NOT NULL,
+    license_number VARCHAR(50) NOT NULL,
+    date_issued DATE NOT NULL,
+    valid_until DATE,
+    review_status VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (review_status IN ('pending', 'approved', 'rejected')),
+    reviewed_by UUID,
+    reviewed_at TIMESTAMPTZ,
+    rejection_reason TEXT,
+    remarks TEXT,
+    uploaded_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chk_rx_rejection
+        CHECK (review_status <> 'rejected' OR rejection_reason IS NOT NULL),
+    CONSTRAINT chk_rx_valid_until
+        CHECK (valid_until IS NULL OR valid_until >= date_issued)
+);
+
+
+-- =====================================================
+-- INDEXES
+-- =====================================================
+
+CREATE INDEX IF NOT EXISTS idx_carts_merchant_id
+ON public.carts(merchant_id);
+
+CREATE INDEX IF NOT EXISTS idx_orders_user_id
+ON public.orders(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_orders_merchant_id
+ON public.orders(merchant_id);
+
+CREATE INDEX IF NOT EXISTS idx_orders_alert_id
+ON public.orders(alert_id);
+
+CREATE INDEX IF NOT EXISTS idx_orders_status
+ON public.orders(status);
+
+CREATE INDEX IF NOT EXISTS idx_order_items_order_id
+ON public.order_items(order_id);
+
+CREATE INDEX IF NOT EXISTS idx_order_history_order_id
+ON public.order_status_history(order_id);
+
+CREATE INDEX IF NOT EXISTS idx_prescriptions_order_id
+ON public.prescriptions(order_id);
+
+
+-- =====================================================
+-- END OF MODULE 4 STANDALONE SCHEMA
+-- =====================================================
